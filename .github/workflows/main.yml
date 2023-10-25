@@ -1,0 +1,37 @@
+name: main
+on: workflow_dispatch
+env:
+  SCHEME_NAME: 'EMHenTai'
+  BUILDS_PATH: '/tmp/action-builds'
+  PAYLOAD_PATH: '/tmp/action-builds/Payload'
+  ARCHIVE_PATH: '/tmp/action-builds/EMHenTai.xcarchive'
+  IPA_OUTPUT_PATH: '/tmp/action-builds/EMHenTai.ipa'
+
+jobs:
+  build:
+    runs-on: macos-13
+    steps:
+      - name: Checkout
+        uses: actions/checkout@master
+      - name: Get date
+        id: date
+        run: echo "DATE=v$(date +%Y).$(date +%j)" >> $GITHUB_ENV
+      - name: Bump version
+        id: bump
+        uses: yanamura/ios-bump-version@v1
+        with:
+          version: ${{ env.DATE }}
+      - name: Xcode archive
+        run: xcodebuild archive -destination 'generic/platform=iOS' -scheme ${{ env.SCHEME_NAME }} -archivePath ${{ env.ARCHIVE_PATH }} CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY= CODE_SIGN_ENTITLEMENTS= GCC_OPTIMIZATION_LEVEL=-O3 SWIFT_OPTIMIZATION_LEVEL=-O
+      - name: Export .ipa file
+        run: |
+          mkdir -p ${{ env.PAYLOAD_PATH }}
+          mv ${{ env.ARCHIVE_PATH }}/Products/Applications/${{ env.SCHEME_NAME }}.app ${{ env.PAYLOAD_PATH }}/${{ env.SCHEME_NAME }}.app
+          pushd ${{ env.BUILDS_PATH }}
+          zip -r ${{ env.IPA_OUTPUT_PATH }} ./Payload
+          popd
+      - name: Release
+        uses: softprops/action-gh-release@master
+        with:
+          tag_name: ${{ env.DATE }}
+          files: ${{ env.IPA_OUTPUT_PATH }}
