@@ -63,8 +63,8 @@ final class GalleryViewController: UICollectionViewController {
         
         NSLayoutConstraint.activate([
             navBarBackgroundView.topAnchor.constraint(equalTo: view.topAnchor),
-            navBarBackgroundView.leftAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leftAnchor),
-            navBarBackgroundView.rightAnchor.constraint(equalTo: view.safeAreaLayoutGuide.rightAnchor),
+            navBarBackgroundView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            navBarBackgroundView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             navBarBackgroundView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
         ])
         
@@ -122,7 +122,8 @@ final class GalleryViewController: UICollectionViewController {
         } else if lastSeenPageIndex > 0 {
             let index = lastSeenPageIndex
             DispatchQueue.main.async { [weak self] in
-                self?.collectionView.scrollToItem(at: IndexPath(row: index, section: 0), at: .left, animated: false)
+                guard let self else { return }
+                collectionView.scrollToItem(at: IndexPath(row: index, section: 0), at: .left, animated: false)
             }
         }
     }
@@ -165,7 +166,8 @@ extension GalleryViewController {
         if let cell = cell as? GalleryCollectionViewCell {
             cell.updateImageWith(filePath: book.imagePath(at: indexPath.row))
             cell.tapBlock = { [weak self] in
-                self?.changeNavBarHidden()
+                guard let self else { return }
+                changeNavBarHidden()
             }
         }
         return cell
