@@ -30,40 +30,38 @@ final actor DownloadManager {
     private var taskMap = [Int: Task<Void, Never>]()
     
     nonisolated func download(_ book: Book) {
-        Task { await p_download(book) }
+        Task { await checkAndDownload(book) }
     }
     
-    private func p_download(_ book: Book) {
+    private func checkAndDownload(_ book: Book) {
         guard case let state = downloadState(of: book), state != .ing && state != .finish else { return }
         
         try? FileManager.default.createDirectory(at: URL(fileURLWithPath: book.folderPath), withIntermediateDirectories: true)
         
         taskMap[book.gid] = Task {
-            await pp_download(book)
+            await startDownload(book)
             taskMap[book.gid] = nil
-            if downloadState(of: book) == .finish {
-                downloadStateChangedSubject.send((book, .finish))
-            }
+            downloadStateChangedSubject.send((book, downloadState(of: book)))
         }
         
         downloadStateChangedSubject.send((book, .ing))
     }
     
     nonisolated func suspend(_ book: Book) {
-        Task { await p_suspend(book) }
+        Task { await privateSuspend(book) }
     }
     
-    private func p_suspend(_ book: Book) {
+    nonisolated func remove(_ book: Book) {
+        Task { await privateRemove(book) }
+    }
+    
+    private func privateSuspend(_ book: Book) {
         taskMap[book.gid]?.cancel()
         taskMap[book.gid] = nil
         downloadStateChangedSubject.send((book, .suspend))
     }
     
-    nonisolated func remove(_ book: Book) {
-        Task { await p_remove(book) }
-    }
-    
-    private func p_remove(_ book: Book) {
+    private func privateRemove(_ book: Book) {
         taskMap[book.gid]?.cancel()
         taskMap[book.gid] = nil
         try? FileManager.default.removeItem(atPath: book.folderPath)
@@ -80,7 +78,7 @@ final actor DownloadManager {
         }
     }
     
-    private nonisolated func pp_download(_ book: Book) async {
+    private nonisolated func startDownload(_ book: Book) async {
         if !FileManager.default.fileExists(atPath: book.coverImagePath) {
             let from = KingfisherManager.shared.cache.diskStorage.cacheFileURL(forKey: book.thumb)
             if FileManager.default.fileExists(atPath: from.path) {
@@ -89,10 +87,12 @@ final actor DownloadManager {
             } else {
                 _ = try? await emSession
                     .download(book.thumb, interceptor: RetryPolicy.downloadRetryPolicy, to: { _, _ in (URL(fileURLWithPath: book.coverImagePath), []) })
-                    .serializingDownload(using: URLResponseSerializer(), automaticallyCancelling: true)
+                    .serializingDownload(using: URLResponseSerializer())
                     .value
             }
         }
+        
+        guard !Task.isCancelled else { return }
         
         let urlStream = AsyncStream<String> { continuation in
             Task {
@@ -102,12 +102,13 @@ final actor DownloadManager {
                         guard checkGroupNeedRequest(of: book, groupIndex: groupIndex) else { continue }
                         group.addTask {
                             let url = book.currentWebURLString + (groupIndex > 0 ? "?p=\(groupIndex)" : "") + "/?nw=session"
-                            guard let value = try? await emSession.request(url, interceptor: RetryPolicy.downloadRetryPolicy).serializingString(automaticallyCancelling: true).value
-                            else { return }
+                            guard let value = try? await emSession.request(url, interceptor: RetryPolicy.downloadRetryPolicy).serializingString().value else { return }
+                            guard !Task.isCancelled else { return }
                             let baseURL = SearchInfo.currentSource.rawValue + "s/"
                             value.allSubString(of: baseURL, endCharater: "\"").forEach { continuation.yield(baseURL + $0) }
                         }
                         await group.waitForAll()
+                        guard !Task.isCancelled else { return }
                     }
                 })
                 continuation.finish()
@@ -116,30 +117,14 @@ final actor DownloadManager {
         
         await withTaskGroup(of: Void.self, body: { group in
             for await url in urlStream {
-                let imgIndex = (url.split(separator: "-").last.flatMap({ Int("\($0)") }) ?? 1) - 1
-                let imgKey = url.split(separator: "/").count > 1 ? url.split(separator: "/").reversed()[1] : ""
+                guard !Task.isCancelled else { return }
+                let imgIndex = (url.split(separator: "-").last.flatMap({ Int($0) }) ?? 1) - 1
                 guard !FileManager.default.fileExists(atPath: book.imagePath(at: imgIndex)) else { continue }
-                guard !imgKey.isEmpty else { continue }
                 
                 group.addTask {
-                    guard let value = try? await emSession.request(url, interceptor: RetryPolicy.downloadRetryPolicy).serializingString(automaticallyCancelling: true).value
-                    else { return }
-                    guard let showKey = value.allSubString(of: "showkey=\"", endCharater: "\"").first else { return }
-                    
-                    guard let source = try? await emSession.request(
-                        SearchInfo.currentSource.rawValue + "api.php",
-                        method: .post,
-                        parameters: [
-                            "method": "showpage",
-                            "gid": book.gid,
-                            "page": imgIndex + 1,
-                            "imgkey": imgKey,
-                            "showkey": showKey],
-                        encoding: JSONEncoding.default,
-                        interceptor: RetryPolicy.downloadRetryPolicy
-                    ).serializingDecodable(GroupModel.self, automaticallyCancelling: true).value.i3 else { return }
-                    
-                    guard let imgURL = source.allSubString(of: "src=\"", endCharater: "\"").first else { return }
+                    guard let html = try? await emSession.request(url, interceptor: RetryPolicy.downloadRetryPolicy).serializingString().value else { return }
+                    guard !Task.isCancelled else { return }
+                    guard let imgURL = html.allSubString(of: "<img id=\"img\" src=\"", endCharater: "\"").first else { return }
                     
                     guard let p = try? await emSession
                         .download(imgURL, interceptor: RetryPolicy.downloadRetryPolicy, to: { _, _ in (URL(fileURLWithPath: book.imagePath(at: imgIndex)), []) })
@@ -147,10 +132,14 @@ final actor DownloadManager {
                             guard let self else { return }
                             downloadPageProgressSubject.send((book, imgIndex, progress))
                         })
-                            .serializingDownload(using: URLResponseSerializer(), automaticallyCancelling: true)
-                            .value, FileManager.default.fileExists(atPath: p.path) else { return }
+                            .serializingDownload(using: URLResponseSerializer())
+                            .value,
+                            FileManager.default.fileExists(atPath: p.path)
+                    else { return }
                     
-                    self.downloadPageSuccessSubject.send((book, imgIndex))
+                    Task { @DownloadManagerActor in
+                        self.downloadPageSuccessSubject.send((book, imgIndex))
+                    }
                 }
             }
         })
@@ -169,10 +158,11 @@ final actor DownloadManager {
     }
 }
 
-private struct GroupModel: Codable {
-    let i3: String
+private extension RetryPolicy {
+    static let downloadRetryPolicy = RetryPolicy(retryLimit: 6)
 }
 
-private extension RetryPolicy {
-    static let downloadRetryPolicy = RetryPolicy(retryLimit: .max)
+@globalActor private actor DownloadManagerActor {
+    static let shared = DownloadManagerActor()
 }
+
