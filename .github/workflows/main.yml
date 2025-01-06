@@ -31,7 +31,7 @@ jobs:
           zip -r ${{ env.IPA_OUTPUT_PATH }} ./Payload
           popd
       - name: Release
-        uses: softprops/action-gh-release@master
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.DATE }}
           files: ${{ env.IPA_OUTPUT_PATH }}
